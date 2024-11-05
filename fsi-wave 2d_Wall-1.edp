@@ -1,0 +1,309 @@
+// Load necessary FreeFem++ libraries
+load "msh3"
+load "medit"
+macro dimension 2() //EOM
+
+// Parameters
+real E = 20000;
+real sigma = 0.29;
+real gravity = -9.81;
+real coef = 0.2;
+real rho = 1;
+real Wth=0.25;
+real Height=5;
+real WaterHeight=3;
+real WaterHeight2 = 1.5;
+
+// Mesh Parameters
+int ElsXSolid=1;
+int ElsYSolid=10;
+
+// Time parameters
+real T = 1.0; // Total time
+real dt = 0.1; // Time step
+int nsteps = T/dt; // Number of time steps
+real amp = 10.0; // Amplitude of the wave
+real omega = 400;
+
+// Mesh
+border a(t=0, Wth) {x=t; y=0; label=1;};
+border b(t=0, Height) {x=Wth; y=t; label=2;};
+border c(t=Wth, 0) {x=t; y=Height; label=3;};
+border d(t=Height, 0) {x=0; y=t; label=4;};
+
+mesh th2 = buildmesh(a(ElsXSolid) + b(ElsYSolid) + c(ElsXSolid) + d(ElsYSolid),fixedborder=0);
+mesh th1 = trunc(th2, 1, split=2);
+plot(th1, wait=0, dim=2, fill=true, cmm="Solid Mesh");
+
+//fespace
+fespace Uh1(th1,P1);
+Uh1 uux1, uuy1, vvx1, vvy1 ;
+
+//Macro
+real sqrt2=sqrt(2.);
+real mu = E/(2*(1+sigma));
+real lambda = E*sigma/((1+sigma)*(1-2*sigma));
+
+cout <<"Lambda = "<< gravity << endl;
+cout << "Mu = " << mu << endl;
+
+macro epsilon(ux, uy) [dx(ux), dy(uy), (dy(ux)+dx(uy))/sqrt2] //EOM
+macro div(ux, uy) (dx(ux) + dy(uy)) //EOM
+
+solve Elasticity([uux1,uuy1],[vvx1,vvy1])=
+  int2d(th1)(
+            lambda*div(vvx1,vvy1)*div(uux1,uuy1)
+            +2.*mu*(epsilon(uux1,uuy1)'*epsilon(vvx1,vvy1))
+              )
+  - int2d(th1) (rho*gravity*vvy1)
+  + on(1, uux1=0, uuy1=0)
+  ;
+
+
+mesh th3 = movemesh(th1,[x+uux1, y+uuy1]);
+
+//fespace
+fespace Uh(th3,P1);
+Uh uux, uuy, vvx, vvy;
+
+plot([uux, uuy], value = true, cmm="u", wait=0);
+plot(th1, dim=2, fill=true, value=1, wait=0);
+
+
+//medit("utotal",th1,[uux,uuy],order=1,wait=1);
+
+// Mesh (fluid)
+border k(t=-4, 0){x=t; y=0; label= 9;}
+border l(t=0, WaterHeight){x=0; y=t ; label= 10;}
+border m(t=0, -4){x=t; y=WaterHeight; label= 11;}
+border n(t=WaterHeight, 0){x=-4; y=t; label= 12;}
+
+mesh sh2 = buildmesh(k(10) + l(10) + m(10) + n(10));
+mesh sh1 = trunc(sh2, 1, split=2);
+plot(sh1, wait=0);
+plot(th1, sh1, wait=0, cmm="Combined Initial Mesh");
+
+//Mesh (fluid2)
+border kk(t=Wth, 4+Wth){x=t; y=0; label= 13;}
+border ll(t=0, WaterHeight2){x=4+Wth; y=t ; label= 14;}
+border mm(t=4+Wth, Wth){x=t; y=WaterHeight2; label= 15;}
+border nn(t=WaterHeight2, 0){x=Wth; y=t; label= 16;}
+
+mesh sh4 = buildmesh(kk(10) + ll(10) + mm(10) + nn(10));
+mesh sh3 = trunc(sh4, 1, split=2);
+plot(sh3, wait=0);
+plot(th1, sh1, sh3, wait=1, cmm="Combined Initial Mesh");
+
+//Fespace(Fluid)
+fespace Vh(sh1,P2);
+Vh ux, uy, vx, vy, ux1, uy1, dux, duy ;
+
+fespace Ph(sh1, P1);
+Ph p, q, dp;
+
+//Macro
+macro Gradient(u) [dx(u), dy(u)] //
+macro Divergence(ux, uy) (dx(ux) + dy(uy)) //
+macro UgradV(ux,uy,vx,vy) [ [ux,uy]'*[dx(vx),dy(vx)] , [ux,uy]'*[dx(vy),dy(vy)] ]// EOM
+
+real arrns = 1e-9;
+
+
+
+Uh sigmaxx2, sigmayy2, sigmaxy2 ;
+
+
+// Vectors to store values for plotting
+real[int] forceValues(nsteps);
+real[int] displacementValues(nsteps);
+real[int] navierStokesValues(nsteps);
+real[int] vonMisesValues(nsteps);
+
+// Iterate over time steps
+for (int step = 0; step < nsteps; ++step) {
+  // Update time
+  real t = step * dt;
+
+  // Problem
+  problem S1([ux, uy, p], [vx, vy, q])
+    = int2d(sh1)(
+      rho * (Gradient(ux)' * Gradient(vx)
+        + Gradient(uy)' * Gradient(vy))
+      - p * Divergence(vx, vy)
+      - Divergence(ux, uy) * q)
+    + on(12, ux = amp * sin(omega * t+1e-6))
+    + on(9, ux = 0., uy = 0.);
+
+  problem LinNS1([ux1, uy1, dp], [vx, vy, q]) =
+    int2d(sh1)(
+      rho * (Gradient(ux1)' * Gradient(vx)
+        + Gradient(uy1)' * Gradient(vy))
+      + UgradV(ux1, uy1, ux, uy)' * [vx, vy]
+      + UgradV(ux, uy, ux1, uy1)' * [vx, vy]
+      - Divergence(ux1, uy1) * q - Divergence(vx, vy) * dp)
+    - int2d(sh1)(UgradV(ux, uy, ux, uy)' * [vx, vy])
+    + on(12, ux1 = amp * sin(omega * t+1e-6))
+    + on(9, ux1 = 0, uy1 = 0);
+
+  // Solve fluid problem
+   int n;
+ real err=0;
+   S1;
+/* Newton Loop  */
+ for(n=0; n< nsteps; n++) {
+   LinNS1;
+   dux[] = ux1[] - ux[];
+   duy[] = uy1[] - uy[];
+   err = sqrt(int2d(sh1)(Gradient(dux)'*Gradient(dux)+Gradient(duy)'*Gradient(duy))) /
+     sqrt(int2d(sh1)(Gradient(ux)'*Gradient(ux) + Gradient(uy)'*Gradient(uy)));
+   ux[] = ux1[];
+   uy[] = uy1[];
+   cout << err << " / " << arrns << endl;
+   cout.flush;
+   if(err < arrns) break;
+ }
+ /* Newton loop has not converged */
+ if(err > arrns) {
+   cout << "NS Warning : non convergence : err = " << err << " / eps = " << arrns << endl;
+ };
+
+  // Update fluid forces on solid
+  sigmaxx2 = (2 * dx(ux) - p);
+  sigmayy2 = (2 * dy(uy) - p);
+  sigmaxy2 = (dy(ux) + dx(uy));
+
+  // Store values for plotting
+  forceValues[step] = int2d(th1)(sqrt(sigmaxx2^2 + sigmayy2^2 + sigmaxy2^2));
+  displacementValues[step] = sqrt(int2d(th1)((uux)^2 + (uuy)^2));
+  navierStokesValues[step] = sqrt(int2d(sh1)((ux)^2 + (uy)^2));
+  vonMisesValues[step] = sqrt(int2d(th1)((sigmaxx2 - sigmayy2)^2 + 3*sigmaxy2^2));
+
+
+  // Solve solid problem
+  solve Elasticity2([uux, uuy], [vvx, vvy]) =
+    int2d(th3)(
+      lambda * div(vvx, vvy) * div(uux, uuy)
+      + 2. * mu * (epsilon(vvx, vvy)' * epsilon(uux, uuy))
+    )
+    - int2d(th3)(rho * gravity * vvy)
+    - int1d(th3,4)(
+      coef * (sigmaxx2 * N.x * vvx + sigmayy2 * N.y * vvy + sigmaxy2 * (N.y * vvx + N.x * vvy))
+    )
+    + on(1, uux = 0, uuy = 0);
+
+
+
+    cout << "Sigma XX = " << sigmaxx2[].linfty << endl;
+    cout << "Sigma YY = " << sigmayy2[].linfty << endl;
+    cout << "Sigma XY = " << sigmaxy2[].linfty << endl;
+
+
+//Solve fluid2
+fespace Vh2(sh3, P2);
+
+Vh2  ux2, uy2, vx2, vy2, ux22, uy22, dux2, duy2, ux22n, uy22n;
+
+fespace Ph2(sh3, P1);
+Ph2 p2, q2, dp2;
+
+
+problem S2([ux2, uy2, p2], [vx2, vy2, q2])
+  = int2d(sh3)(
+    rho * (Gradient(ux2)' * Gradient(vx2)
+      + Gradient(uy2)' * Gradient(vy2))
+    - p2 * Divergence(vx2, vy2)
+    - q2 * Divergence(ux2, uy2))
+  + on(16, ux2 = uux, uy2=0);
+
+  problem NS2([ux22, uy22, dp2], [vx2, vy2, q2]) =
+    int2d(sh3)(
+      rho * (Gradient(ux22)' * Gradient(vx2)
+        + Gradient(uy22)' * Gradient(vy2))
+      + UgradV(ux22, uy22, ux2, uy2)' * [vx2, vy2]
+      + UgradV(ux22, uy22, ux2, uy2)' * [vx2, vy2]
+      - Divergence(ux22, uy22) * q2 - Divergence(vx2, vy2) * dp2)
+    - int2d(sh3)(UgradV(ux2, uy2, ux2, uy2)' * [vx2, vy2])
+    + on(16, ux22 = uux, uy22 = 0);
+
+  S2;
+  NS2;
+
+  ux22[] = ux22[];
+  uy22[] = uy22[];
+
+
+
+  // Update mesh displacement
+   th3 = movemesh(th1, [x + uux, y + uuy]);
+   //plot([uux,uuy], fill = true, value=true, wait=1);
+   sh1 = adaptmesh(sh1, [dx(ux1), dy(uy1), dx(ux1), dy(uy1)], splitpbedge=1, abserror=0, cutoff=0.01, inquire=0, ratio=1.5, hmin=1./1000);
+   //plot(sh1);
+   //plot(p2, fill= 1, value = true, wait = 1);
+   sh3 = adaptmesh(sh3, [dx(ux22), dy(uy22), dx(ux22), dy(uy22)], splitpbedge=1, abserror=0, cutoff=0.01, inquire=0, ratio=1.5, hmin=1./1000);
+   sh3 = movemesh(sh3, [x+ux22, y+uy22]);
+
+   //ux2 = ux2 ;
+   //uy2 = uy2 ;
+   //plot(sh3);
+   //plot(sh3, fill = true, value=true, cmm="sh3 (Step " + step + ")", wait=1);
+   plot(th3,sh1,sh3, value = true, fill = 1, wait = 1);
+   plot(th3,sh1,sh3,[ux, uy],[ux2, uy2], value = true, fill = 1, wait = 1);
+   //plot(th3,sh1, [ux, uy], ps = "velocity.ps", value = 1, coef = .05, wait=0);
+   //plot(p, ps = "pressure.ps", value = 1, fill = 1, wait=1);
+   plot(sigmayy2, fill = true, value=true, cmm="Sigma YY (Step " + step + ")", wait=1);
+}
+  // Plot results
+  plot(th3,sh1,sh3, value = true, fill = true, wait = 1);
+  //plot(th3,sh1, [ux, uy], ps = "velocity.ps", value = 1, coef = .05, wait=0);
+  //plot(p, ps = "pressure.ps", value = 1, fill = 1, wait=1);
+
+  // Additional Plots
+  //plot(sigmaxx2, value=true, cmm="Sigma XX (Step " + step + ")", wait=0);
+  //plot(sigmayy2, fill = true, value=true, cmm="Sigma YY (Step " + step + ")", wait=1);
+  //plot(sigmaxy2, value=true, cmm="Sigma XY (Step " + step + ")", wait=0);
+
+  //border k(t=-4, 0){x=t; y=0; label= 9;}
+  //border l(t=0, WaterHeight){x=0+uux(0,t)*( t>=0.001 )*(t <= 0.999*WaterHeight); y=t+uuy(0,t)*( t>=0.001 )*(t <= //0.999*WaterHeight) ; label= 10;}
+  //border m(t=0, -4){x=t; y=WaterHeight; label= 11;}
+  //border nb(t=WaterHeight, 0){x=-4; y=t; label= 12;}
+  //sh2 = buildmesh(k(10) + l(10) + m(10) + nb(10));
+  //sh1 = trunc(sh2, 1, split=2);
+
+//}
+
+//medit("final", th3,sh1,sh3, [uux, uuy], order = 1, wait = 1);
+
+//Obtaining the von Mises stress
+
+fespace Wh(th1,P1); //We can define a new finite elements space
+Wh Sigmavm;
+
+//Stress tensor (since it is symmetric, it is enough with 3 elements)
+
+macro Sigma(uux,uuy) [2*mu*dx(uux)+lambda*(dx(uux)+dy(uuy)),
+2*mu*dy(uuy)+lambda*(dx(uux)+dy(uuy)),mu*(dy(uux)+dx(uuy))]//EOM
+
+//Von Mises stress
+
+Sigmavm = sqrt(Sigma(uux,uuy)[0]*Sigma(uux,uuy)[0]-Sigma(uux,uuy)[0]*Sigma(uux,uuy)[1]
++Sigma(uux,uuy)[1]*Sigma(uux,uuy)[1]+3*Sigma(uux,uuy)[2]*Sigma(uux,uuy)[2]);
+
+plot(Sigmavm, value=true, fill=true, cmm="Von Mises Stress"); //Ploting the result
+
+real Sigmavmmax = Sigmavm[].max; //Max. von Mises stress
+
+cout << " Max von Mises Stress = " << Sigmavmmax << endl;
+
+
+// Plot the diagrams
+ofstream forceFile("forceValues.txt");
+ofstream displacementFile("displacementValues.txt");
+ofstream navierStokesFile("navierStokesValues.txt");
+ofstream vonMisesFile("vonMisesValues.txt");
+
+for (int step = 0; step < nsteps ; ++step) {
+  forceFile << step*dt << " " << forceValues[step] << endl;
+  displacementFile << step*dt << " " << displacementValues[step] << endl;
+  navierStokesFile << step*dt << " " << navierStokesValues[step] << endl;
+  vonMisesFile << step*dt << " " << vonMisesValues[step] << endl;
+}
